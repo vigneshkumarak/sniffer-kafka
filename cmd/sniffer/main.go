@@ -53,6 +53,8 @@ func main() {
 
 	// init metrics storage
 	metricsStorage := metrics.NewStorage(prometheus.DefaultRegisterer, *expireTime)
+	// Set the default storage for utility functions
+	metrics.SetDefaultStorage(metricsStorage)
 
 	// Set up assembly
 	streamPool := tcpassembly.NewStreamPool(stream.NewKafkaStreamFactory(metricsStorage, *verbose))
@@ -98,6 +100,9 @@ func main() {
 
 func runTelemetry() {
 	fmt.Printf("serving metrics on %s\n", *listenAddr)
+	
+	// Start goroutine to cleanup expired user-client mappings
+	go metrics.CleanupExpiredUserMappings()
 
 	http.Handle("/metrics", promhttp.Handler())
 	if err := http.ListenAndServe(*listenAddr, nil); err != nil {

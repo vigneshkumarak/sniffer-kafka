@@ -114,10 +114,23 @@ func Decode(buf []byte, in decoder) error {
 		return err
 	}
 
-	if helper.off != len(buf) {
-		return PacketDecodingError{fmt.Sprintf("invalid length, expected: %d, got: %d", helper.off, len(buf))}
+	// Be more lenient with length verification - some clients may send extra data
+	// For traffic analysis purposes, we care more about extracting the valid fields
+	// than strictly enforcing byte count
+	
+	// Offset should be at most the buffer length
+	if helper.off > len(buf) {
+		return PacketDecodingError{fmt.Sprintf("invalid length, read beyond buffer: expected at most %d, got: %d", len(buf), helper.off)}
 	}
-
+	
+	// Small discrepancies (less than 20 bytes) are ok for monitoring purposes
+	// This is especially important for newer Kafka protocol versions that may include
+	// additional fields our decoder doesn't handle yet
+	diff := len(buf) - helper.off
+	if diff > 20 {
+		return PacketDecodingError{fmt.Sprintf("significant length mismatch: unconsumed bytes %d", diff)}
+	}
+	
 	return nil
 }
 

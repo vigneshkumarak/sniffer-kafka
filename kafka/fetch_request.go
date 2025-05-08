@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"fmt"
 	"github.com/d-ulyanov/kafka-sniffer/metrics"
 )
 
@@ -183,7 +184,9 @@ func (r *FetchRequest) Decode(pd PacketDecoder, version int16) (err error) {
 
 // CollectClientMetrics collects metrics associated with client
 func (r *FetchRequest) CollectClientMetrics(srcHost string) {
-	metrics.RequestsCount.WithLabelValues(srcHost, "fetch").Inc()
+	// Include API version in metrics
+	versionStr := fmt.Sprintf("%d", r.Version)
+	metrics.RequestsCount.WithLabelValues(srcHost, "fetch", versionStr).Inc()
 
 	blocksCount := r.GetRequestedBlocksCount()
 	metrics.BlocksRequested.WithLabelValues(srcHost).Add(float64(blocksCount))

@@ -58,8 +58,9 @@ func newKafkaVersion(major, minor, veryMinor, patch uint) Version {
 
 // IsAtLeast return true if and only if the version it is called on is
 // greater than or equal to the version passed in:
-//    V1.IsAtLeast(V2) // false
-//    V2.IsAtLeast(V1) // true
+//
+//	V1.IsAtLeast(V2) // false
+//	V2.IsAtLeast(V1) // true
 func (v Version) IsAtLeast(other Version) bool {
 	for i := range v.version {
 		if v.version[i] > other.version[i] {

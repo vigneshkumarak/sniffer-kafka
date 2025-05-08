@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"fmt"
 	"github.com/d-ulyanov/kafka-sniffer/metrics"
 )
 
@@ -138,7 +139,9 @@ func (r *ProduceRequest) RecordsSize() (recordsSize int) {
 
 // CollectClientMetrics collects metrics associated with client
 func (r *ProduceRequest) CollectClientMetrics(srcHost string) {
-	metrics.RequestsCount.WithLabelValues(srcHost, "produce").Inc()
+	// Include API version in metrics
+	versionStr := fmt.Sprintf("%d", r.Version)
+	metrics.RequestsCount.WithLabelValues(srcHost, "produce", versionStr).Inc()
 
 	batchSize := r.RecordsSize()
 	metrics.ProducerBatchSize.WithLabelValues(srcHost).Add(float64(batchSize))

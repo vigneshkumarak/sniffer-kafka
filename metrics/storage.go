@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,22 @@ type Storage struct {
 	producerTopicRelationInfo *metric
 	consumerTopicRelationInfo *metric
 	activeConnectionsTotal    *metric
+	
+	// Maps client IPs to their authenticated usernames
+	userClientMapping     map[string]userInfo
+	// Maps client IPs to the topics they produce to
+	clientProducerTopics  map[string]map[string]bool
+	// Maps client IPs to the topics they consume from
+	clientConsumerTopics  map[string]map[string]bool
+	// Mutex for thread-safe map access
+	mapMutex              sync.RWMutex
+}
+
+// userInfo stores authentication information for a client
+type userInfo struct {
+	username   string
+	mechanism  string
+	lastActive time.Time
 }
 
 // NewStorage creates new Storage
@@ -37,13 +54,34 @@ func NewStorage(registerer prometheus.Registerer, expireTime time.Duration) *Sto
 			Name:      "active_connections_total",
 			Help:      "Contains total count of active connections",
 		}, []string{"client_ip"}), expireTime),
+		userClientMapping:     make(map[string]userInfo),
+		clientProducerTopics:  make(map[string]map[string]bool),
+		clientConsumerTopics:  make(map[string]map[string]bool),
 	}
 
-	registerer.MustRegister(
-		s.producerTopicRelationInfo.promMetric,
-		s.consumerTopicRelationInfo.promMetric,
-		s.activeConnectionsTotal.promMetric,
-	)
+	// Use safe registration approach for all metrics to avoid panics on duplicate registration
+	tryRegister := func(c prometheus.Collector) {
+		if err := registerer.Register(c); err != nil {
+			fmt.Printf("Note: metric already registered: %v\n", err)
+		}
+	}
+	
+	// First register storage-specific metrics
+	tryRegister(s.producerTopicRelationInfo.promMetric)
+	tryRegister(s.consumerTopicRelationInfo.promMetric)
+	tryRegister(s.activeConnectionsTotal.promMetric)
+	
+	// Then register the global metrics from external.go
+	
+	tryRegister(RequestsCount)
+	tryRegister(ProducerBatchLen)
+	tryRegister(ProducerBatchSize)
+	tryRegister(BlocksRequested)
+	tryRegister(ClientSoftwareInfo)
+	tryRegister(AuthenticationInfo)
+	tryRegister(AuthUserActivity) 
+	tryRegister(ProducerUserTopicInfo)
+	tryRegister(ConsumerUserTopicInfo)
 
 	return s
 }
@@ -51,16 +89,156 @@ func NewStorage(registerer prometheus.Registerer, expireTime time.Duration) *Sto
 // AddProducerTopicRelationInfo adds (producer, topic) pair to metrics
 func (s *Storage) AddProducerTopicRelationInfo(producer, topic string) {
 	s.producerTopicRelationInfo.set(producer, topic)
+	
+	// Track producer -> topic relationship in memory
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	
+	if _, exists := s.clientProducerTopics[producer]; !exists {
+		s.clientProducerTopics[producer] = make(map[string]bool)
+	}
+	s.clientProducerTopics[producer][topic] = true
+	
+	// If this client has an associated username, also update the user-topic metrics
+	if userInfo, exists := s.userClientMapping[producer]; exists {
+		// Update the metric to track which user is producing to this topic
+		ProducerUserTopicInfo.WithLabelValues(producer, userInfo.username, topic).Set(1)
+		fmt.Printf("Storage: Updated producer-topic relation with username: %s -> %s (user: %s)\n", 
+			producer, topic, userInfo.username)
+	}
 }
 
 // AddConsumerTopicRelationInfo adds (consumer, topic) pair to metrics
 func (s *Storage) AddConsumerTopicRelationInfo(consumer, topic string) {
 	s.consumerTopicRelationInfo.set(consumer, topic)
+	
+	// Track consumer -> topic relationship in memory
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	
+	if _, exists := s.clientConsumerTopics[consumer]; !exists {
+		s.clientConsumerTopics[consumer] = make(map[string]bool)
+	}
+	s.clientConsumerTopics[consumer][topic] = true
+	
+	// If this client has an associated username, also update the user-topic metrics
+	if userInfo, exists := s.userClientMapping[consumer]; exists {
+		// Update the metric to track which user is consuming from this topic
+		ConsumerUserTopicInfo.WithLabelValues(consumer, userInfo.username, topic).Set(1)
+		fmt.Printf("Storage: Updated consumer-topic relation with username: %s -> %s (user: %s)\n", 
+			consumer, topic, userInfo.username)
+	}
 }
 
 // AddActiveConnectionsTotal adds incoming connection
 func (s *Storage) AddActiveConnectionsTotal(clientIP string) {
 	s.activeConnectionsTotal.inc(clientIP)
+}
+
+// AddUserClientMapping associates a username with a client IP
+func (s *Storage) AddUserClientMapping(clientIP, username, mechanism string) {
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	
+	// Store the username and authentication info for this client IP
+	s.userClientMapping[clientIP] = userInfo{
+		username:   username,
+		mechanism:  mechanism,
+		lastActive: time.Now(),
+	}
+	
+	// Also update the user-topic metrics for any existing topic relationships
+	s.updateUserTopicMetrics(clientIP, username)
+	
+	fmt.Printf("Storage: Added user mapping for client %s, username %s, mechanism %s\n", 
+		clientIP, username, mechanism)
+}
+
+// GetUsernameForClient returns the username associated with a client IP
+func (s *Storage) GetUsernameForClient(clientIP string) string {
+	s.mapMutex.RLock()
+	defer s.mapMutex.RUnlock()
+	
+	userData, exists := s.userClientMapping[clientIP]
+	if !exists {
+		return ""
+	}
+	
+	// Update last active time
+	userData.lastActive = time.Now()
+	s.userClientMapping[clientIP] = userData
+	
+	return userData.username
+}
+
+// GetAuthMechanismForClient returns the SASL mechanism used by a client
+func (s *Storage) GetAuthMechanismForClient(clientIP string) string {
+	s.mapMutex.RLock()
+	defer s.mapMutex.RUnlock()
+	
+	userData, exists := s.userClientMapping[clientIP]
+	if !exists {
+		return ""
+	}
+	
+	return userData.mechanism
+}
+
+// GetClientProducerTopics returns the list of topics a client is producing to
+func (s *Storage) GetClientProducerTopics(clientIP string) []string {
+	s.mapMutex.RLock()
+	defer s.mapMutex.RUnlock()
+	
+	topics := []string{}
+	for topic := range s.clientProducerTopics[clientIP] {
+		topics = append(topics, topic)
+	}
+	return topics
+}
+
+// GetClientConsumerTopics returns the list of topics a client is consuming from
+func (s *Storage) GetClientConsumerTopics(clientIP string) []string {
+	s.mapMutex.RLock()
+	defer s.mapMutex.RUnlock()
+	
+	topics := []string{}
+	for topic := range s.clientConsumerTopics[clientIP] {
+		topics = append(topics, topic)
+	}
+	return topics
+}
+
+// updateUserTopicMetrics updates all topic metrics with the username
+// Should be called with the lock held
+func (s *Storage) updateUserTopicMetrics(clientIP, username string) {
+	// Update producer topic metrics
+	for topic := range s.clientProducerTopics[clientIP] {
+		ProducerUserTopicInfo.WithLabelValues(clientIP, username, topic).Set(1)
+		fmt.Printf("Storage: Updated existing producer-topic relation with username: %s -> %s (user: %s)\n", 
+			clientIP, topic, username)
+	}
+	
+	// Update consumer topic metrics
+	for topic := range s.clientConsumerTopics[clientIP] {
+		ConsumerUserTopicInfo.WithLabelValues(clientIP, username, topic).Set(1)
+		fmt.Printf("Storage: Updated existing consumer-topic relation with username: %s -> %s (user: %s)\n", 
+			clientIP, topic, username)
+	}
+}
+
+// CleanupExpiredUserMappings removes inactive user mappings to prevent memory leaks
+func (s *Storage) CleanupExpiredUserMappings(expirationTime time.Duration) {
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	
+	now := time.Now()
+	for clientIP, userInfo := range s.userClientMapping {
+		if now.Sub(userInfo.lastActive) > expirationTime {
+			fmt.Printf("Storage: Removing expired user mapping for client %s, username %s\n", 
+				clientIP, userInfo.username)
+			delete(s.userClientMapping, clientIP)
+		}
+	}
 }
 
 // metric contains expiration functionality

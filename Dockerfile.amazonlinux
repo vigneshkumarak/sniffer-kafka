@@ -1,0 +1,16 @@
+FROM amazonlinux:2
+
+# Install dependencies
+RUN yum update -y && \
+    yum install -y golang libpcap-devel git gcc make which
+
+# Set up working directory
+WORKDIR /build
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN go build -o kafka-sniffer-linux ./cmd/sniffer
+
+# The binary will be at /build/kafka-sniffer-linux
