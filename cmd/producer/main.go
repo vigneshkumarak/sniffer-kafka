@@ -19,9 +19,9 @@ var (
 	saslUsername  = flag.String("sasl-username", "", "SASL username")
 	saslPassword  = flag.String("sasl-password", "", "SASL password")
 	// Topic flags
-	topics        = flag.String("topics", "mytopic,mysecondtopic", "Comma-separated list of topics to produce to")
-	sendInterval  = flag.Int("interval", 5, "Interval in seconds between message sends")
-	clientID      = flag.String("client-id", "kafka-sniffer-producer", "Client ID to use for connections")
+	topics       = flag.String("topics", "mytopic,mysecondtopic", "Comma-separated list of topics to produce to")
+	sendInterval = flag.Int("interval", 5, "Interval in seconds between message sends")
+	clientID     = flag.String("client-id", "kafka-sniffer-producer", "Client ID to use for connections")
 )
 
 func main() {
@@ -43,7 +43,7 @@ func main() {
 
 	brokerList := strings.Split(*brokers, ",")
 	log.Printf("Kafka brokers: %s", strings.Join(brokerList, ", "))
-	
+
 	// Log authentication settings
 	if *useSASL {
 		log.Printf("Using SASL authentication with mechanism %s and username %s",
@@ -85,7 +85,7 @@ func main() {
 		if err != nil {
 			log.Printf("Failed to send messages: %s", err)
 		} else {
-			log.Printf("Successfully sent %d messages to topics: %s", 
+			log.Printf("Successfully sent %d messages to topics: %s",
 				len(messages), strings.Join(topicList, ", "))
 		}
 
@@ -113,13 +113,13 @@ func newDataCollector(brokerList []string) (sarama.SyncProducer, error) {
 	log.Printf("Using highest supported Kafka version: %s", config.Version)
 	config.Producer.Return.Successes = true
 	config.Producer.Return.Errors = true
-	
+
 	// Configure SASL if enabled
 	if *useSASL {
 		config.Net.SASL.Enable = true
 		config.Net.SASL.User = *saslUsername
 		config.Net.SASL.Password = *saslPassword
-		
+
 		switch *saslMechanism {
 		case "PLAIN":
 			config.Net.SASL.Mechanism = sarama.SASLTypePlaintext
