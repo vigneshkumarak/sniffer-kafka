@@ -26,7 +26,7 @@ const (
 
 var (
 	iface      = flag.String("i", "eth0", "Interface to get packets from")
-	dstport    = flag.Uint("p", 9092, "Kafka broker port")
+	dstport    = flag.Uint("p", 9094, "Kafka broker port")
 	snaplen    = flag.Int("s", 16<<10, "SnapLen for pcap packet capture")
 	filter     = fmt.Sprintf("tcp and dst port %d", *dstport)
 	verbose    = flag.Bool("v", false, "Logs every packet in great detail")
@@ -100,7 +100,7 @@ func main() {
 
 func runTelemetry() {
 	fmt.Printf("serving metrics on %s\n", *listenAddr)
-	
+
 	// Start goroutine to cleanup expired user-client mappings
 	go metrics.CleanupExpiredUserMappings()
 
