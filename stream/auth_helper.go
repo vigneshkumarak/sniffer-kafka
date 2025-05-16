@@ -28,6 +28,63 @@ func extractSaslPlainUsername(data []byte) (string, bool) {
 		return "", false
 	}
 	
+	// Look for consumer client pattern (e.g., consumer-sub-000-WYvrGSY-472)
+	if bytes.Contains(data, []byte("consumer-sub")) {
+		log.Printf("DEBUG: Found consumer client pattern")
+		
+		// In consumer clients, the format appears to be different
+		// The username is often after the clientID and a few bytes
+		
+		// First find the client ID
+		consumerIdx := bytes.Index(data, []byte("consumer-sub"))
+		if consumerIdx > 0 {
+			// Look for the end of client ID (usually marked by 0x00 byte)
+			for i := consumerIdx + 12; i < len(data); i++ {
+				if data[i] == 0x00 && i+1 < len(data) && data[i+1] == 0x53 { // 0x53 is 'S'
+					// Found potential username start
+					userStart := i + 2
+					
+					// Find next null byte or end
+					userEnd := -1
+					for j := userStart; j < len(data); j++ {
+						if data[j] == 0x00 {
+							userEnd = j
+							break
+						}
+					}
+					
+					if userEnd == -1 {
+						userEnd = userStart + 20 // Limit to 20 chars if no null byte
+						if userEnd > len(data) {
+							userEnd = len(data)
+						}
+					}
+					
+					if userEnd > userStart {
+						// Extract candidate username
+						candidate := string(data[userStart:userEnd])
+						log.Printf("DEBUG: Found consumer username candidate: '%s'", candidate)
+						
+						// Clean up the candidate - remove non-ASCII or control chars
+						cleanCandidate := ""
+						for _, c := range candidate {
+							if c >= 32 && c <= 126 { // ASCII printable
+								cleanCandidate += string(c)
+							}
+						}
+						
+						if len(cleanCandidate) > 2 && cleanCandidate != "$" {
+							log.Printf("DEBUG: Extracted consumer username: '%s'", cleanCandidate)
+							return cleanCandidate, true
+						}
+					}
+					
+					break
+				}
+			}
+		}
+	}
+	
 	// Direct check for user1 in the token (based on your hex dump)
 	userPattern := "user1"
 	userIdx := bytes.Index(data, []byte(userPattern))
