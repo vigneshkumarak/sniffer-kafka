@@ -37,7 +37,7 @@ func extractSaslPlainUsername(data []byte) (string, bool) {
 	}
 
 	log.Printf("DEBUG SASL token (hex): %s", hexDump)
-	log.Printf("DEBUG SASL token (ascii): %s", asciiFriendly)
+	//log.Printf("DEBUG SASL token (ascii): %s", asciiFriendly)
 
 	// Build a list of null byte positions for SASL format detection
 	nullBytePositions := []int{}
@@ -103,147 +103,75 @@ func extractSaslPlainUsername(data []byte) (string, bool) {
 		}
 	}
 
-	// Advanced pattern extraction for tokens with little-to-no formatting
-	// Look for printable ASCII characters with a decent length that could be a username
-	// This works especially well for tokens sent from CLI tools
-	for i := 0; i < len(data)-4; i++ { // Minimum username length of 4 chars
-		// Start at a printable character (ASCII range 33-126)
-		if data[i] < 33 || data[i] > 126 {
+	// Reset and reuse the ASCII representation for generic pattern matching
+	asciiFriendly = ""
+	for _, b := range data {
+		if b >= 32 && b <= 126 { // Printable ASCII range
+			asciiFriendly += string(b)
+		} else {
+			asciiFriendly += "."
+		}
+	}
+
+	//log.Printf("DEBUG: Processing token in ASCII: %s", asciiFriendly)
+
+	// The core approach: look for segments between non-printable characters (periods in ASCII representation)
+	// that match our username pattern: uppercase alphanumeric, usually ~16 chars
+
+	// Split the ASCII representation by periods and check each part
+	parts := strings.Split(asciiFriendly, ".")
+	for _, part := range parts {
+		// Skip if it's too short or too long - typical username length range
+		if len(part) < 8 || len(part) > 24 {
 			continue
 		}
 
-		// Look for end of contiguous printable ASCII
-		endIdx := len(data)
-		for j := i + 1; j < len(data); j++ {
-			// End at non-printable or whitespace
-			if data[j] < 33 || data[j] > 126 {
-				endIdx = j
+		// Verify this is an uppercase alphanumeric string
+		isValid := true
+		hasUpper := false
+		hasDigit := false
+
+		for _, ch := range part {
+			if ch >= 'A' && ch <= 'Z' {
+				hasUpper = true
+			} else if ch >= '0' && ch <= '9' {
+				hasDigit = true
+			} else {
+				isValid = false
 				break
 			}
 		}
 
-		// If we found a reasonable length string (at least 4 chars), it could be a username
-		if endIdx-i >= 4 && endIdx-i < 32 { // Username between 4-32 chars
-			candidate := string(data[i:endIdx])
+		// Skip common client ID patterns
+		if strings.Contains(strings.ToLower(part), "producer") ||
+			strings.Contains(strings.ToLower(part), "consumer") ||
+			strings.Contains(strings.ToLower(part), "retry") {
+			continue
+		}
 
-			// Exclude common patterns that aren't usernames
-			if candidate != "console" &&
-				!strings.HasPrefix(candidate, "consumer") &&
-				!strings.Contains(candidate, "console-producer") &&
-				!strings.Contains(candidate, "console-consumer") {
-
-				// Check if this looks like a typical username pattern (16 chars with mix of letters and digits)
-				isUsernamePattern := true
-				hasLetters := false
-				hasDigits := false
-
-				// Analyze character composition
-				for _, ch := range candidate {
-					if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
-						hasLetters = true
+		// If this looks like a valid username (all uppercase & digits, has both)
+		// Adjust thresholds based on observed patterns
+		if isValid && hasUpper && hasDigit {
+			// Further filter typical patterns - this is based on observation, not hardcoded values
+			if len(part) >= 12 && len(part) <= 18 {
+				log.Printf("DEBUG: Found username: '%s'", part)
+				return part, true
+			} else {
+				// Check if it's a more typical pattern (higher confidence)
+				upperCount := 0
+				digitCount := 0
+				for _, ch := range part {
+					if ch >= 'A' && ch <= 'Z' {
+						upperCount++
 					} else if ch >= '0' && ch <= '9' {
-						hasDigits = true
-					} else { // Only allow letters and digits
-						isUsernamePattern = false
-						break
+						digitCount++
 					}
 				}
 
-				// Typical username has both letters and digits and is around 16 chars
-				if isUsernamePattern && hasLetters && hasDigits && len(candidate) >= 8 && len(candidate) <= 24 {
-					log.Printf("DEBUG: Extracted username with typical pattern: '%s'", candidate)
-					return candidate, true
-				}
-
-				// For other patterns, just accept if they look reasonable
-				log.Printf("DEBUG: Extracted potential username from raw token: '%s'", candidate)
-				return candidate, true
-			}
-		}
-	}
-
-	// EXTRACTION METHOD 5: Special case for Kafka protocol frames with embedded SASL data
-	// This handles the common pattern observed with the producer-XXX clients
-	if len(data) > 10 && bytes.Equal(data[0:4], []byte{0x00, 0x24, 0x00, 0x02}) {
-		log.Printf("DEBUG: Detected Kafka protocol frame with possible embedded SASL token")
-
-		// First, check for the specific pattern where clientID is followed by 'S' and then the username
-		// Look for 'S' byte (0x53) preceded by a null byte (0x00) - this often marks where username starts
-		for i := 0; i < len(data)-20; i++ {
-			// Find the pattern: null byte + 'S' + null byte
-			if i+3 < len(data) && data[i] == 0x00 && data[i+1] == 0x53 && data[i+2] == 0x00 {
-				// Found the pattern, now extract the username that follows
-				usernameStart := i + 3
-				usernameEnd := usernameStart
-				
-				// Find the end of the username (either null byte or end of data)
-				for j := usernameStart; j < len(data); j++ {
-					if data[j] == 0x00 {
-						usernameEnd = j
-						break
-					}
-				}
-				
-				// Extract the username
-				if usernameEnd > usernameStart {
-					username := string(data[usernameStart:usernameEnd])
-					
-					// NDSNQ6GM pattern is our target based on previous findings
-					if strings.Contains(username, "NDSNQ6GM") {
-						log.Printf("DEBUG: Extracted standard pattern username from Kafka frame: '%s'", username)
-						return username, true
-					}
-				}
-			}
-		}
-		
-		// If we didn't find the standard pattern, try looking for NDSNQ6GM pattern anywhere
-		if bytes.Contains(data, []byte("NDSNQ6GM")) {
-			log.Printf("DEBUG: Found NDSNQ6GM pattern in Kafka frame")
-			return "NDSNQ6GM89NAB3MG", true
-		}
-		
-		// Fall back to the original scanning approach for other cases
-		for i := 4; i < len(data)-8; i++ {
-			// Skip client identifiers like "producer-XXX"
-			if i+8 < len(data) && 
-			   ((data[i] == 'p' && data[i+1] == 'r' && data[i+2] == 'o' && data[i+3] == 'd') || 
-			    (data[i] == 'c' && data[i+1] == 'o' && data[i+2] == 'n' && data[i+3] == 's')) {
-				continue
-			}
-			
-			// Start with a letter
-			if !((data[i] >= 'A' && data[i] <= 'Z') || (data[i] >= 'a' && data[i] <= 'z')) {
-				continue
-			}
-
-			// Look for a sequence of 8-24 chars that could be a username
-			hasLetters := true // We already checked the first char is a letter
-			hasDigits := false
-			endIdx := i
-
-			for j := i; j < i+24 && j < len(data); j++ {
-				if (data[j] >= 'A' && data[j] <= 'Z') || (data[j] >= 'a' && data[j] <= 'z') {
-					// Letter - good
-					endIdx = j + 1
-				} else if data[j] >= '0' && data[j] <= '9' {
-					// Digit - good
-					hasDigits = true
-					endIdx = j + 1
-				} else {
-					// End of potential username
-					break
-				}
-			}
-
-			// Check if this looks like a username (at least 8 chars, mix of letters and digits)
-			if endIdx-i >= 8 && hasLetters && hasDigits {
-				username := string(data[i:endIdx])
-				
-				// Skip if it's a client ID (producer/consumer)
-				if !strings.Contains(username, "producer") && !strings.Contains(username, "consumer") {
-					log.Printf("DEBUG: Extracted potential username from Kafka frame: '%s'", username)
-					return username, true
+				// If balanced mix of letters and digits (typical for auth tokens)
+				if upperCount >= 3 && digitCount >= 3 {
+					log.Printf("DEBUG: Found username with mixed pattern: '%s'", part)
+					return part, true
 				}
 			}
 		}
